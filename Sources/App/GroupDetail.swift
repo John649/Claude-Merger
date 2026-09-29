@@ -11,24 +11,20 @@ struct GroupDetail: View {
         Form {
             Section {
                 TextField("Name", text: $group.name)
-                Picker("Shares chats of", selection: Binding(
-                    get: { group.hub },
-                    set: { hub in
-                        group.hub = hub
-                        Shared.chatMerger.markChanged(store.applyGroup(group.id))
-                    })) {
-                    ForEach(store.hubOptions(for: group.id), id: \.self) { source in
-                        Text(store.label(for: source)).tag(source)
-                    }
-                }
             } header: {
                 SectionHeader(title: "Group", info: Self.note)
             }
 
-            Section("Members") {
-                if store.shortcuts.isEmpty {
-                    Text("No shortcuts yet")
-                        .foregroundStyle(.secondary)
+            Section {
+                Toggle(isOn: Binding(
+                    get: { group.includesMain },
+                    set: { Shared.chatMerger.markChanged(store.setMain($0, in: group.id)) })) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Claude")
+                        Text("Installed normally")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 ForEach(store.shortcuts) { shortcut in
                     Toggle(isOn: Binding(
@@ -46,6 +42,12 @@ struct GroupDetail: View {
                     }
                     .disabled(!canJoin(shortcut))
                 }
+            } header: {
+                Text("Members")
+            } footer: {
+                Text("Everyone ticked here shares one chat history: a chat started, renamed, archived or deleted in any of them shows up in all of them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -86,20 +88,19 @@ struct GroupDetail: View {
         if let other = shortcut.groupID, other != group.id, let name = store.group(other)?.name {
             return L10n.format("In %@", name)
         }
-        if case .shortcut(let hub) = group.hub, hub == shortcut.id {
-            return L10n.text("Hub — the others read its chats")
-        }
-        return L10n.format("Reads %@", store.label(for: shortcut.source))
+        if shortcut.groupID == group.id { return L10n.text("Sharing") }
+        return shortcut.source == .own
+            ? L10n.text("Its own chats")
+            : L10n.format("Reads %@", store.label(for: shortcut.source))
     }
 
     private static let note = L10n.text("""
-        Every account in a group reads the same Claude Code chats: those of the \
-        hub, which is Claude's own profile or one of the members. Joining points \
-        a shortcut at the hub, the same as choosing it under Reads chats from; a \
-        shortcut already reading those chats keeps the source it has.
+        Every account in a group shares one Claude Code chat history. Each \
+        account's existing chats are merged in when it joins, and from then on \
+        changes made in any of them are carried to all of the others.
 
-        Leaving a group keeps the source the shortcut had. Choose Its own chats \
-        on the shortcut to stop sharing.
+        Leaving a group keeps the chats the account has. Choose Its own chats \
+        on the shortcut to stop sharing. Chats merged into the others stay there.
         """)
 
     private static let mergeNote = L10n.text("""

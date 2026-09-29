@@ -146,7 +146,8 @@ struct ContentView: View {
                     Label {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(group.name)
-                            Text(L10n.format("Shares %@'s chats", store.label(for: group.hub)))
+                            Text(L10n.format("%ld sharing chats",
+                                             store.members(of: group.id).count + (group.includesMain ? 1 : 0)))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

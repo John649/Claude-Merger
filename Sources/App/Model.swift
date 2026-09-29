@@ -138,9 +138,26 @@ struct Shortcut: Codable, Identifiable, Hashable {
 struct ChatGroup: Codable, Identifiable, Hashable {
     var id = UUID()
     var name: String
-    /// Whose chats the group shares: Claude's own profile or one member.
-    /// Never `.own`, which would mean nothing is shared.
+    /// Whose folder the others mirror against: Claude's own profile when it
+    /// is in the group, otherwise one member. Every member ends up holding the
+    /// whole group's chats either way; this only decides the wiring, so the
+    /// window never asks for it.
     var hub: Shortcut.Source = .main
+    /// Claude's own profile has no shortcut to carry a group id, so its
+    /// membership is kept here.
+    var includesMain = false
+
+    init(name: String) { self.name = name }
+
+    private enum CodingKeys: String, CodingKey { case id, name, hub, includesMain }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        hub = try values.decodeIfPresent(Shortcut.Source.self, forKey: .hub) ?? .main
+        includesMain = try values.decodeIfPresent(Bool.self, forKey: .includesMain) ?? false
+    }
 }
 
 final class ShortcutStore: ObservableObject {
@@ -234,11 +251,7 @@ final class ShortcutStore: ObservableObject {
         }
         // A group that lost its hub hands the role to a member still there,
         // and the members the loop above just cut loose are pointed back at it.
-        for index in groups.indices where groups[index].hub == .shortcut(id) {
-            let groupID = groups[index].id
-            groups[index].hub = members(of: groupID).first.map { .shortcut($0.id) } ?? .main
-            applyGroup(groupID)
-        }
+        for groupID in groups.map(\.id) { applyGroup(groupID) }
         return problem
     }
 
@@ -342,11 +355,6 @@ final class ShortcutStore: ObservableObject {
         }
     }
 
-    /// Who the group can share: Claude's own chats or any member's.
-    func hubOptions(for groupID: UUID) -> [Shortcut.Source] {
-        [.main] + members(of: groupID).map { .shortcut($0.id) }
-    }
-
     func newGroup() -> ChatGroup {
         var n = 1
         while groups.contains(where: { $0.name == L10n.format("Group %ld", n) }) { n += 1 }
@@ -363,23 +371,41 @@ final class ShortcutStore: ObservableObject {
         guard let index = shortcuts.firstIndex(where: { $0.id == shortcutID }) else { return [] }
         let previous = shortcuts[index].groupID
         shortcuts[index].groupID = groupID
-        // The first member becomes the hub. Defaulting to Claude's own chats
-        // would re-point an account that keeps its own history at somebody
-        // else's the moment it was put in an empty group.
-        if let groupID, members(of: groupID).count == 1,
-           let at = groups.firstIndex(where: { $0.id == groupID }) {
-            groups[at].hub = .shortcut(shortcutID)
-        }
         // Leaving keeps the source it had. Going back to its own chats is a
         // handover with consequences of its own, and the picker says so.
-        if let previous, previous != groupID,
-           groups.first(where: { $0.id == previous })?.hub == .shortcut(shortcutID) {
-            if let at = groups.firstIndex(where: { $0.id == previous }) {
-                groups[at].hub = members(of: previous).first.map { .shortcut($0.id) } ?? .main
-            }
-            return applyGroup(previous) + (groupID.map(applyGroup) ?? [])
+        var changed: [UUID] = []
+        if let previous, previous != groupID { changed += applyGroup(previous) }
+        if let groupID { changed += applyGroup(groupID) }
+        return changed
+    }
+
+    /// Claude's own profile in or out of the group.
+    @discardableResult
+    func setMain(_ included: Bool, in groupID: UUID) -> [UUID] {
+        guard let at = groups.firstIndex(where: { $0.id == groupID }) else { return [] }
+        groups[at].includesMain = included
+        return applyGroup(groupID)
+    }
+
+    /// Which folder the others mirror against. Claude's own when it is in;
+    /// otherwise the hub already chosen while it is still a member, so adding
+    /// somebody never re-points the rest. Failing that, a member keeping its
+    /// own chats, since pointing that one at anybody would be a new graft.
+    private func settleHub(_ groupID: UUID) {
+        guard let at = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        let group = groups[at]
+        let members = members(of: groupID)
+        let hub: Shortcut.Source
+        if group.includesMain {
+            hub = .main
+        } else if case .shortcut(let id) = group.hub, members.contains(where: { $0.id == id }) {
+            hub = group.hub
+        } else if let own = members.first(where: { $0.source == .own }) ?? members.first {
+            hub = .shortcut(own.id)
+        } else {
+            hub = .main
         }
-        return groupID.map(applyGroup) ?? []
+        if groups[at].hub != hub { groups[at].hub = hub }
     }
 
     func deleteGroup(_ groupID: UUID) {
@@ -395,6 +421,7 @@ final class ShortcutStore: ObservableObject {
     /// first pass that stashes whatever the folder was holding.
     @discardableResult
     func applyGroup(_ groupID: UUID) -> [UUID] {
+        settleHub(groupID)
         guard let group = group(groupID) else { return [] }
         let root = chatRoot(ofGroup: group)
         var changed: [UUID] = []

@@ -1634,10 +1634,20 @@ enum Graft {
     /// everything in step.
     @discardableResult
     static func mirrorKnownPairs() -> Int {
+        // Until nothing moves. Pairs chain — 4 borrows from 2, 2 from 3 — and
+        // one pass in key order carries a chat started in 4 as far as 2 and no
+        // further, so a group of accounts was only ever in step with its
+        // neighbours. Each round is a no-op once the folders agree, and the cap
+        // is there for two sides that keep rewriting the same name.
         var moved = 0
-        for key in loadMirrorState().pairs.keys.sorted() {
-            guard let pair = pairFolders(key) else { continue }
-            moved += mirrorChatFolders(pair.one, pair.other)
+        for _ in 0..<6 {
+            var round = 0
+            for key in loadMirrorState().pairs.keys.sorted() {
+                guard let pair = pairFolders(key) else { continue }
+                round += mirrorChatFolders(pair.one, pair.other)
+            }
+            moved += round
+            if round == 0 { break }
         }
         return moved
     }
