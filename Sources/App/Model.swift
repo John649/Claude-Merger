@@ -87,6 +87,10 @@ struct Shortcut: Codable, Identifiable, Hashable {
     /// from lists written before it existed, and keyed by account because
     /// signing the profile into a different one is a new question.
     var stopAskingChatsFor: String?
+    /// The group this shortcut shares chats with, if any. While it is set the
+    /// group decides the source, so the picker stops being the person's to
+    /// change one shortcut at a time.
+    var groupID: UUID?
     init(name: String, folder: String? = nil, source: Source = .main,
          iconPreset: IconPreset = .original) {
         self.name = name
@@ -97,7 +101,7 @@ struct Shortcut: Codable, Identifiable, Hashable {
 
     private enum CodingKeys: String, CodingKey {
         case id, name, folder, source, iconPreset, installedName
-        case stopAskingChatsFor
+        case stopAskingChatsFor, groupID
     }
 
     init(from decoder: Decoder) throws {
@@ -109,6 +113,7 @@ struct Shortcut: Codable, Identifiable, Hashable {
         iconPreset = try values.decodeIfPresent(IconPreset.self, forKey: .iconPreset) ?? .original
         installedName = try values.decodeIfPresent(String.self, forKey: .installedName)
         stopAskingChatsFor = try values.decodeIfPresent(String.self, forKey: .stopAskingChatsFor)
+        groupID = try values.decodeIfPresent(UUID.self, forKey: .groupID)
     }
 
     /// "Work Account" -> "Claude-Work-Account", "Claude 2" -> "Claude-2".
@@ -124,16 +129,42 @@ struct Shortcut: Codable, Identifiable, Hashable {
     var profileDir: URL { Graft.applicationSupport.appending(path: folder) }
 }
 
+/// Accounts that all read one chat history.
+///
+/// A group is the source picker said once for several shortcuts: every member
+/// ends up on the store its hub reads. Members already on that store keep the
+/// source they have, because re-pointing a mirror at a different folder reads
+/// as a first pass and stashes what it was holding.
+struct ChatGroup: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var name: String
+    /// Whose chats the group shares: Claude's own profile or one member.
+    /// Never `.own`, which would mean nothing is shared.
+    var hub: Shortcut.Source = .main
+}
+
 final class ShortcutStore: ObservableObject {
     @Published var shortcuts: [Shortcut] = [] { didSet { save() } }
+    @Published var groups: [ChatGroup] = [] { didSet { saveGroups() } }
 
     private let file: URL = Graft.shortcutsFile
+    private let groupsFile: URL = Graft.shortcutsFile
+        .deletingLastPathComponent().appending(path: "groups.json")
 
     init() {
         if let data = try? Data(contentsOf: file),
            let decoded = try? JSONDecoder().decode([Shortcut].self, from: data) {
             shortcuts = decoded
         }
+        if let data = try? Data(contentsOf: groupsFile),
+           let decoded = try? JSONDecoder().decode([ChatGroup].self, from: data) {
+            groups = decoded
+        }
+    }
+
+    private func saveGroups() {
+        guard let data = try? JSONEncoder().encode(groups) else { return }
+        try? data.write(to: groupsFile, options: .atomic)
     }
 
     private func save() {
@@ -200,6 +231,13 @@ final class ShortcutStore: ObservableObject {
         // chats, un-grafting on the next launch without a word.
         for index in shortcuts.indices where shortcuts[index].source == .shortcut(id) {
             shortcuts[index].source = .own
+        }
+        // A group that lost its hub hands the role to a member still there,
+        // and the members the loop above just cut loose are pointed back at it.
+        for index in groups.indices where groups[index].hub == .shortcut(id) {
+            let groupID = groups[index].id
+            groups[index].hub = members(of: groupID).first.map { .shortcut($0.id) } ?? .main
+            applyGroup(groupID)
         }
         return problem
     }
@@ -286,6 +324,90 @@ final class ShortcutStore: ObservableObject {
             return next == target || leadsBack(from: next, to: target, depth: depth + 1)
         }
         return false
+    }
+
+    // MARK: - Groups
+
+    func group(_ id: UUID) -> ChatGroup? { groups.first { $0.id == id } }
+
+    func members(of groupID: UUID) -> [Shortcut] {
+        shortcuts.filter { $0.groupID == groupID }
+    }
+
+    /// The store every member of the group reads.
+    func chatRoot(ofGroup group: ChatGroup) -> URL {
+        switch group.hub {
+        case .own, .main: return Graft.mainProfile
+        case .shortcut(let id): return shortcut(id).map(chatRoot(for:)) ?? Graft.mainProfile
+        }
+    }
+
+    /// Who the group can share: Claude's own chats or any member's.
+    func hubOptions(for groupID: UUID) -> [Shortcut.Source] {
+        [.main] + members(of: groupID).map { .shortcut($0.id) }
+    }
+
+    func newGroup() -> ChatGroup {
+        var n = 1
+        while groups.contains(where: { $0.name == L10n.format("Group %ld", n) }) { n += 1 }
+        let group = ChatGroup(name: L10n.format("Group %ld", n))
+        groups.append(group)
+        return group
+    }
+
+    /// Takes the shortcut into the group and onto the group's chats. Returns
+    /// the shortcuts whose source changed, whose bundles need their config
+    /// rewritten and whose folders need a graft pass.
+    @discardableResult
+    func join(_ shortcutID: UUID, to groupID: UUID?) -> [UUID] {
+        guard let index = shortcuts.firstIndex(where: { $0.id == shortcutID }) else { return [] }
+        let previous = shortcuts[index].groupID
+        shortcuts[index].groupID = groupID
+        // The first member becomes the hub. Defaulting to Claude's own chats
+        // would re-point an account that keeps its own history at somebody
+        // else's the moment it was put in an empty group.
+        if let groupID, members(of: groupID).count == 1,
+           let at = groups.firstIndex(where: { $0.id == groupID }) {
+            groups[at].hub = .shortcut(shortcutID)
+        }
+        // Leaving keeps the source it had. Going back to its own chats is a
+        // handover with consequences of its own, and the picker says so.
+        if let previous, previous != groupID,
+           groups.first(where: { $0.id == previous })?.hub == .shortcut(shortcutID) {
+            if let at = groups.firstIndex(where: { $0.id == previous }) {
+                groups[at].hub = members(of: previous).first.map { .shortcut($0.id) } ?? .main
+            }
+            return applyGroup(previous) + (groupID.map(applyGroup) ?? [])
+        }
+        return groupID.map(applyGroup) ?? []
+    }
+
+    func deleteGroup(_ groupID: UUID) {
+        for index in shortcuts.indices where shortcuts[index].groupID == groupID {
+            shortcuts[index].groupID = nil
+        }
+        groups.removeAll { $0.id == groupID }
+    }
+
+    /// Points every member that is not on the group's store yet at the hub.
+    /// Members already reading the same chats are left as they are: changing
+    /// which folder a mirror borrows from is a new pair, and a new pair is a
+    /// first pass that stashes whatever the folder was holding.
+    @discardableResult
+    func applyGroup(_ groupID: UUID) -> [UUID] {
+        guard let group = group(groupID) else { return [] }
+        let root = chatRoot(ofGroup: group)
+        var changed: [UUID] = []
+        for member in members(of: groupID) {
+            if case .shortcut(let hub) = group.hub, hub == member.id { continue }
+            guard !Graft.samePath(chatRoot(for: member), root) else { continue }
+            guard availableSources(for: member).contains(group.hub),
+                  let index = shortcuts.firstIndex(where: { $0.id == member.id })
+            else { continue }
+            shortcuts[index].source = group.hub
+            changed.append(member.id)
+        }
+        return changed
     }
 
     /// Numbering starts at two, since the stock app is the first one.

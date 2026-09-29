@@ -77,6 +77,9 @@ struct ContentView: View {
     private var profileDetail: some View {
         if selection == Self.mainProfileID {
             MainProfileDetail()
+        } else if let selection, let index = store.groups.firstIndex(where: { $0.id == selection }) {
+            GroupDetail(group: $store.groups[index])
+                .id(selection)
         } else if let selection, let index = store.shortcuts.firstIndex(where: { $0.id == selection }) {
             ShortcutDetail(shortcut: $store.shortcuts[index],
                            requestDelete: { requestDeletion(of: selection) })
@@ -138,8 +141,58 @@ struct ContentView: View {
                 .tag(Self.mainProfileID)
             }
 
-            Section("Shortcuts") {
-                ForEach(store.shortcuts) { shortcut in
+            ForEach(store.groups) { group in
+                Section {
+                    Label {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(group.name)
+                            Text(L10n.format("Shares %@'s chats", store.label(for: group.hub)))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "person.3")
+                            .foregroundStyle(.secondary)
+                    }
+                    .tag(group.id)
+                    .contextMenu {
+                        Button("Delete Group", role: .destructive) {
+                            if selection == group.id { selection = nil }
+                            store.deleteGroup(group.id)
+                        }
+                    }
+                    ForEach(store.members(of: group.id)) { shortcut in
+                        row(shortcut)
+                    }
+                } header: {
+                    Text(group.name)
+                }
+            }
+
+            Section(store.groups.isEmpty ? "Shortcuts" : "Not in a group") {
+                ForEach(store.shortcuts.filter { $0.groupID == nil }) { shortcut in
+                    row(shortcut)
+                }
+            }
+
+            Button(action: add) {
+                Label("New Shortcut", systemImage: "plus")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 2)
+
+            Button(action: addGroup) {
+                Label("New Group", systemImage: "person.3")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 2)
+        }
+        .onDeleteCommand { if let selection { requestDeletion(of: selection) } }
+    }
+
+    private func row(_ shortcut: Shortcut) -> some View {
                     Label {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(shortcut.name)
@@ -160,17 +213,10 @@ struct ContentView: View {
                             requestDeletion(of: shortcut.id)
                         }
                     }
-                }
-            }
+    }
 
-            Button(action: add) {
-                Label("New Shortcut", systemImage: "plus")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .padding(.vertical, 2)
-        }
-        .onDeleteCommand { if let selection { requestDeletion(of: selection) } }
+    private func addGroup() {
+        selection = store.newGroup().id
     }
 
     /// The foot of the sidebar. There is no About panel and no preferences

@@ -9,6 +9,8 @@ struct MenuBarContent: View {
     @EnvironmentObject private var usage: UsageMonitor
     @ObservedObject private var updater = Shared.updater
     @ObservedObject private var sessionRecords = Shared.sessionRecords
+    @ObservedObject private var merger = Shared.chatMerger
+    @State private var autoMerge = ChatMerger.automatic
 
     /// Passed in: this view is hosted by an NSPopover, outside any scene, so
     /// the openWindow environment action is not available here.
@@ -91,6 +93,10 @@ struct MenuBarContent: View {
                     get: { settings.openAtLogin },
                     set: { problem = settings.setOpenAtLogin($0) }))
                 Toggle("Show in Menu Bar", isOn: $settings.showInMenuBar)
+                Toggle("Merge Chats Automatically", isOn: Binding(
+                    get: { autoMerge },
+                    set: { autoMerge = $0; ChatMerger.automatic = $0 }))
+                    .help("Grafts, mirrors and brings chats across whenever every Claude is closed, without waiting for a shortcut to be opened.")
                 ManualUpdateControl()
             }
             .toggleStyle(.checkbox)
@@ -98,7 +104,20 @@ struct MenuBarContent: View {
 
             Divider().padding(.vertical, 6)
 
+            if let note = merger.note {
+                Text(note)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
+            }
+
             VStack(alignment: .leading, spacing: 4) {
+                MenuButton(merger.merging ? "Merging Chats…" : "Merge Chats Now") {
+                    merger.mergeAsking(store)
+                }
+                .disabled(merger.merging)
                 MenuButton(usage.isRefreshing ? "Refreshing…" : "Refresh Usage") {
                     usage.refresh(store, interactive: true)
                 }

@@ -49,6 +49,7 @@ enum Shared {
     static let usage = UsageMonitor()
     static let updater = Updater()
     static let sessionRecords = SessionRecords()
+    static let chatMerger = ChatMerger()
     static let updateRecovery = UpdateRecoveryMonitor()
     static let manualUpdates = ManualUpdateSettings()
     static let claudeUpdates = ClaudeDesktopUpdater()
@@ -116,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the pass that matters runs in a shortcut's launcher, on its way
         // to opening the Claude that will read what it files.
         Shared.sessionRecords.sweep(Shared.store)
+        Shared.chatMerger.start(watching: Shared.store)
         // A shortcut goes on behaving like the Graft that built it until its
         // launcher is replaced, and the update that replaced this app never
         // touched them. Off the main thread: this copies binaries and runs

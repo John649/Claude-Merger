@@ -7,6 +7,7 @@ struct ShortcutDetail: View {
     /// The figures come from here rather than from this profile's own history
     /// file, so the window and the menu bar cannot disagree about one account.
     @EnvironmentObject private var usage: UsageMonitor
+    @ObservedObject private var merger = Shared.chatMerger
     @Binding var shortcut: Shortcut
     let requestDelete: () -> Void
 
@@ -91,9 +92,33 @@ struct ShortcutDetail: View {
             }
 
             Section {
+                Picker("Group", selection: Binding(
+                    get: { shortcut.groupID },
+                    set: { Shared.chatMerger.markChanged(store.join(shortcut.id, to: $0)) })) {
+                    Text("None").tag(UUID?.none)
+                    ForEach(store.groups) { group in
+                        Text(group.name).tag(UUID?.some(group.id))
+                    }
+                }
                 Picker("Reads chats from", selection: $shortcut.source) {
                     ForEach(store.availableSources(for: shortcut), id: \.self) { source in
                         Text(store.label(for: source)).tag(source)
+                    }
+                }
+                .disabled(shortcut.groupID != nil)
+                .help(shortcut.groupID != nil
+                      ? L10n.text("Set by the group. Leave the group to choose a source here.")
+                      : "")
+                HStack(spacing: 8) {
+                    Button(merger.merging ? L10n.text("Merging…") : L10n.text("Merge Chats Now")) {
+                        merger.mergeAsking(store)
+                    }
+                    .disabled(merger.merging)
+                    if let note = merger.note {
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 if shortcut.source != .own {
@@ -470,7 +495,8 @@ struct ShortcutDetail: View {
     /// copy refused for a Claude still being open has not done what the press
     /// asked for, and carrying on to open a window would bury the one line
     /// saying which Claude to quit.
-    private func adopt(_ found: Graft.ChatsElsewhere, then: (() -> Void)? = nil) {
+    private func adopt(_ found: Graft.ChatsElsewhere, then: (() -> Void)? = nil,
+                       blocked: (() -> Void)? = nil) {
         guard !copying else { return }
         copying = true
         let profile = shortcut.profileDir
@@ -488,7 +514,8 @@ struct ShortcutDetail: View {
                                             store.name(ofProfile: found.profile), result.copied)
                 }
                 refresh()
-                if result.running.isEmpty, result.copied > 0 { then?() }
+                if result.running.isEmpty { then?() }
+                if !result.running.isEmpty { blocked?() }
             }
         }
     }
@@ -506,7 +533,14 @@ struct ShortcutDetail: View {
         if let found = elsewhere,
            shortcut.stopAskingChatsFor != found.account,
            !store.askedAboutChats.contains(shortcut.id) {
-            askAboutElsewhere = true
+            // Merged without asking when that is switched on. A copy refused
+            // for a Claude still being open falls back to the question, which
+            // is the one place that says which Claude to quit.
+            if ChatMerger.automatic {
+                adopt(found, then: { checkSharers() }, blocked: { askAboutElsewhere = true })
+            } else {
+                askAboutElsewhere = true
+            }
             return
         }
         checkSharers()
