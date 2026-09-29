@@ -1,0 +1,1 @@
+Local Claude Graft 1.1.6 build with its self-updater disabled at user request. Updater.swift is inert, its menu is disabled, the Sparkle framework and update-feed metadata are absent. Source base: aaditya-v-more/claude-graft commit 0446afb. Claude Desktop’s separate updater is unchanged.
