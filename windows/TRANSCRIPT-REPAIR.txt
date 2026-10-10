@@ -1,0 +1,15 @@
+Windows transcript repair
+
+The merger now journals Code transcript JSONL files and subagent transcript JSONL
+files alongside local session metadata. It repairs missing cliSessionId and
+transcriptUnavailable only when an unambiguous source transcript is available.
+Divergent histories are preserved and reported. It copies append-only extensions
+only; it never deletes transcripts. It does not transfer credentials, attachments,
+Cowork VM state, or guarantee cross-account server authorization.
+
+All Claude Desktop processes must be closed before Merge chats now. Restart Graft
+once after this update. Automatic merging is disabled during recovery. Original
+source and settings are retained in timestamped before-transcripts backups.
+
+Verification: 101 fixture tests, 8 skips. Real affected-session read-only plan:
+93 transcript transfers, 2 resume repairs, no warnings. No live merge performed.

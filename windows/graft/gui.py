@@ -146,7 +146,7 @@ class App:
         entry = ttk.Entry(exe_frame, textvariable=self.claude)
         entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.controls.append(entry)
-        self._button(exe_frame, "Browse…", self.browse_claude)
+        self._button(exe_frame, "Browse...", self.browse_claude)
 
         profiles = ttk.LabelFrame(frame, text="Profiles", padding=10)
         profiles.pack(fill="both", expand=True)
@@ -159,10 +159,10 @@ class App:
         self.profiles.bind("<Double-1>", lambda event: self.open_profile())
         actions = ttk.Frame(profiles)
         actions.pack(fill="x", pady=(8, 0))
-        self._button(actions, "New profile…", self.add_profile)
+        self._button(actions, "New profile...", self.add_profile)
         self._button(actions, "Open Claude", self.open_profile)
-        self._button(actions, "Create shortcut…", self.create_shortcut)
-        self._button(actions, "Unregister…", self.remove_profile)
+        self._button(actions, "Create shortcut...", self.create_shortcut)
+        self._button(actions, "Unregister...", self.remove_profile)
 
         groups = ttk.LabelFrame(frame, text="Chat groups", padding=10)
         groups.pack(fill="both", expand=True, pady=(12, 0))
@@ -175,13 +175,14 @@ class App:
         self.groups.bind("<Double-1>", lambda event: self.edit_group())
         group_actions = ttk.Frame(groups)
         group_actions.pack(fill="x", pady=(8, 0))
-        self._button(group_actions, "New group…", lambda: self.edit_group(new=True))
-        self._button(group_actions, "Edit…", self.edit_group)
-        self._button(group_actions, "Remove…", self.remove_group)
+        self._button(group_actions, "New group...", lambda: self.edit_group(new=True))
+        self._button(group_actions, "Edit...", self.edit_group)
+        self._button(group_actions, "Remove...", self.remove_group)
 
         merge_actions = ttk.Frame(frame)
         merge_actions.pack(fill="x", pady=(14, 6))
         self._button(merge_actions, "Merge chats now", self.merge)
+        self._button(merge_actions, "Close all Claudes", self.close_all_claudes)
         self._button(merge_actions, "Refresh", self.refresh)
         auto = ttk.Checkbutton(merge_actions, text="Merge every 2 minutes while this manager is open",
                                variable=self.automatic, command=self.set_automatic)
@@ -316,7 +317,7 @@ class App:
             self.profiles.selection_set(profile["id"])
             self.status.set(f"Created {profile['name']}. Open it and sign in before merging chats.")
 
-        self._run("Creating profile…", lambda: self.manager.add_profile(name.strip()), done)
+        self._run("Creating profile...", lambda: self.manager.add_profile(name.strip()), done)
 
     def open_profile(self):
         if self.busy:
@@ -325,9 +326,25 @@ class App:
         if not profile:
             return
         executable = self.claude.get().strip() or None
-        self._run(f"Opening {profile['name']}…",
+        self._run(f"Opening {profile['name']}...",
                   lambda: self.manager.open_profile(profile["id"], executable=executable),
                   lambda _: self.status.set(f"Opened {profile['name']}."))
+
+    def close_all_claudes(self):
+        if self.busy:
+            return
+        with self._dialog():
+            if not messagebox.askyesno("Close all Claudes", "Close every Claude Desktop profile? Active tasks will stop. Remaining tray/background processes will be stopped after 8 seconds.", parent=self.root):
+                return
+        def done(result):
+            remaining = result.get("remaining", [])
+            if remaining:
+                self.status.set(f"{len(remaining)} Claude Desktop processes remain. Quit them before merging.")
+            elif result.get("merge_blockers"):
+                self.status.set("Claude Desktop closed. Other Claude processes still prevent merging.")
+            else:
+                self.status.set("All Claude Desktop profiles closed. Ready to merge chats.")
+        self._run("Closing all Claude Desktop profiles...", platform.close_all_claudes, done)
 
     def create_shortcut(self):
         if self.busy:
@@ -343,7 +360,7 @@ class App:
         if not filename:
             return
         executable, arguments = shortcut_command(profile["id"], self.claude.get().strip() or None, self.data_dir)
-        self._run("Creating shortcut…", lambda: platform.create_shortcut(
+        self._run("Creating shortcut...", lambda: platform.create_shortcut(
             profile["name"], executable, arguments, Path(filename)),
             lambda path: self.status.set(f"Shortcut saved: {path}"))
 
@@ -361,7 +378,7 @@ class App:
                 "Unregister profile", f"Unregister {profile['name']} and remove its group memberships?\n\n"
                 "Its files and sign-in data will stay on disk. Existing shortcuts will stop working.", parent=self.root)
         if confirmed:
-            self._run("Unregistering profile…", lambda: self.manager.remove_profile(profile["id"]))
+            self._run("Unregistering profile...", lambda: self.manager.remove_profile(profile["id"]))
 
     def edit_group(self, new=False):
         if self.busy:
@@ -376,7 +393,7 @@ class App:
             if new and any(existing["name"].casefold() == name.casefold() for existing in self.group_rows):
                 self._error(ValueError("A group with that name already exists. Select it and choose Edit."))
                 return
-            self._run("Saving group…", lambda: self.manager.set_group(name, members))
+            self._run("Saving group...", lambda: self.manager.set_group(name, members))
 
     def remove_group(self):
         if self.busy:
@@ -389,7 +406,7 @@ class App:
                 "Remove chat group", f"Remove {group['name']}?\n\nAlready shared chats will remain in each profile.",
                 parent=self.root)
         if confirmed:
-            self._run("Removing group…", lambda: self.manager.remove_group(group["id"]))
+            self._run("Removing group...", lambda: self.manager.remove_group(group["id"]))
 
     def set_automatic(self):
         if self.busy:
@@ -415,7 +432,7 @@ class App:
                     show = messagebox.showwarning if result.get("conflicts") or result.get("warnings") else messagebox.showinfo
                     show("Chat merge result", merge_summary(result), parent=self.root)
 
-        self._run("Merging chats… Keep Claude closed until this finishes.", self.manager.merge, done, quiet=automatic)
+        self._run("Merging chats... Keep Claude closed until this finishes.", self.manager.merge, done, quiet=automatic)
 
     def _auto_merge(self):
         if self.closed:
@@ -437,10 +454,20 @@ class App:
 def run(manager, claude: str | None = None, data_dir: Path | None = None) -> None:
     root = tk.Tk()
     try:
-        App(root, manager, claude=claude, data_dir=data_dir)
+        app = App(root, manager, claude=claude, data_dir=data_dir)
+        root.title("Claude Graft - Saved profiles")
+        from pathlib import Path
+        import json
+        Path(__file__).resolve().parents[1].joinpath("startup-check.json").write_text(json.dumps({
+            "settings": str(manager.config_file),
+            "main": str(manager.profile_path("main")),
+            "profile_rows": len(app.profiles.get_children()),
+            "group_rows": len(app.groups.get_children())
+        }), encoding="utf-8")
         root.mainloop()
     finally:
         try:
             root.destroy()
         except tk.TclError:
             pass
+

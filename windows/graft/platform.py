@@ -138,7 +138,19 @@ def _install_candidates(root: Path) -> list[Path]:
 def discover_claude(explicit: str | None = None) -> Path:
     """Find the registered MSIX or a legacy Claude .exe, or validate a custom path."""
     if explicit is not None:
-        return _validate_claude_executable(explicit)
+        try:
+            return _validate_claude_executable(explicit)
+        except PlatformError:
+            # An open manager can retain a package path removed by an update.
+            old = Path(explicit)
+            if old.exists() or old.name.casefold() != "claude.exe" or old.parent.name.casefold() != "app":
+                raise
+            package = _registered_claude_package()
+            if (package is None or old.parent.parent.parent != package.install_location.parent
+                    or not old.parent.parent.name.startswith("Claude_")
+                    or old.parent.parent.name.split("__")[-1] != package.install_location.name.split("__")[-1]):
+                raise
+            return discover_claude()
 
     package = _registered_claude_package()
     if package is not None:
@@ -410,3 +422,71 @@ def create_shortcut(name: str, target: Path, arguments: list[str], destination: 
     if not shortcut.is_file() or shortcut.stat().st_size == 0:
         raise PlatformError("Windows did not create the requested shortcut.")
     return shortcut
+
+
+
+_CLOSE_DESKTOP_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$settings = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json
+function Get-DesktopClaudes {
+    @(Get-CimInstance Win32_Process -Filter "name='claude.exe'" | Where-Object {
+        $_.SessionId -eq [Diagnostics.Process]::GetCurrentProcess().SessionId -and
+        $_.ExecutablePath -and (
+            $_.ExecutablePath -ieq $settings.executable -or
+            $_.ExecutablePath -match '\\WindowsApps\\Claude_[^\\]+\\app\\claude\.exe$'
+        )
+    })
+}
+$initial = @(Get-DesktopClaudes)
+if ($settings.preview) {
+    ConvertTo-Json -Compress -InputObject @{targets=@($initial | ForEach-Object {$_.ProcessId}); count=$initial.Count}
+    exit 0
+}
+$deadline = [DateTime]::UtcNow.AddSeconds(8)
+foreach ($entry in $initial) {
+    if ($entry.CommandLine -notmatch '--type=') {
+        $process = Get-Process -Id $entry.ProcessId -ErrorAction SilentlyContinue
+        if ($process) { [void]$process.CloseMainWindow() }
+    }
+}
+foreach ($entry in $initial) {
+    $process = Get-Process -Id $entry.ProcessId -ErrorAction SilentlyContinue
+    $remaining = [int][Math]::Max(0, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+    if ($process -and $remaining -gt 0) { [void]$process.WaitForExit($remaining) }
+}
+$forced = 0
+$errors = @()
+foreach ($entry in @(Get-DesktopClaudes)) {
+    # Re-enumerate by verified executable path; never target the standalone CLI.
+    try { Stop-Process -Id $entry.ProcessId -ErrorAction Stop; $forced++ }
+    catch { if (Get-Process -Id $entry.ProcessId -ErrorAction SilentlyContinue) { $errors += $_.Exception.Message } }
+}
+$left = @(Get-DesktopClaudes)
+ConvertTo-Json -Compress -InputObject @{closed=($initial.Count-$left.Count); forced=$forced; remaining=@($left | ForEach-Object {$_.ProcessId}); errors=$errors}
+"""
+
+
+def close_all_claudes(preview: bool = False) -> dict:
+    """Close Desktop windows, then stop remaining Desktop tray/background processes."""
+    _require_windows()
+    executable = str(discover_claude())
+    payload = base64.b64encode(json.dumps({'executable': executable, 'preview': preview}).encode()).decode()
+    script = _CLOSE_DESKTOP_SCRIPT.replace('__PAYLOAD__', payload)
+    encoded = base64.b64encode(script.encode('utf-16-le')).decode()
+    result = subprocess.run(
+        [str(_powershell_executable()), '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+        capture_output=True, text=True, encoding='utf-8', timeout=25,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if result.returncode:
+        raise PlatformError('Could not close Claude Desktop: ' + (result.stderr.strip() or 'Windows process query failed.'))
+    try:
+        report = json.loads(result.stdout)
+        if not isinstance(report, dict):
+            raise ValueError('invalid result')
+        if not preview:
+            report['merge_blockers'] = running_claudes()
+        return report
+    except ValueError as exc:
+        raise PlatformError('Could not read the close-all result. Refresh before merging.') from exc

@@ -139,6 +139,15 @@ class Manager:
                 raise ValueError("invalid configuration")
             if not (isinstance(config.get("autoMerge", False), bool)):
                 raise ValueError("invalid configuration")
+            for key in ("mainFolder", "profileBase", "mainTranscriptBase"):
+                value = config.get(key)
+                if value is not None:
+                    if not isinstance(value, str) or not value or "\\" in value:
+                        raise ValueError("invalid profile location")
+                    parts = value.split("/")
+                    if any(not part or part in (".", "..") or ":" in part for part in parts):
+                        raise ValueError("invalid profile location")
+                    self._safe(self.root.joinpath(*parts))
             ids, folders = {"main"}, {"claude", "claudegraftwindows"}
             for profile in config["profiles"]:
                 if not (str(uuid.UUID(profile["id"])) == profile["id"]):
@@ -201,17 +210,17 @@ class Manager:
                 raise GraftError("A profile already has that name.")
             identity = str(uuid.uuid4())
             profile = {"id": identity, "name": name, "folder": "Claude-Graft-" + identity}
-            self._safe(self.root / profile["folder"]).mkdir()
+            self._safe(self.root / config.get("profileBase", "") / profile["folder"]).mkdir()
             config["profiles"].append(profile)
             _save(self.config_file, config)
             return profile
 
     def profile_path(self, identity):
         if identity == "main":
-            return self._safe(self.root / "Claude")
+            return self._safe(self.root / self._load_config().get("mainFolder", "Claude"))
         for profile in self.profiles():
             if profile["id"] == identity:
-                return self._safe(self.root / profile["folder"])
+                return self._safe(self.root / self._load_config().get("profileBase", "") / profile["folder"])
         raise GraftError("Unknown profile. Refresh the profile list.")
 
     def set_group(self, name, members):
@@ -311,8 +320,16 @@ class Manager:
             if any(not group_orgs for group_orgs in orgs):
                 raise GraftError(f"No organization folder in {store}. Create a chat in each profile first.")
             if len(set(a.casefold() for a in accounts)) > 1:
-                if any(len(items) != 1 for items in orgs):
-                    raise GraftError("Cross-account sharing requires exactly one organization per profile; an ambiguous organization is never guessed.")
+                selected_orgs = []
+                for items in orgs:
+                    if len(items) > 1:
+                        populated = [item for item in items if self._records(item)]
+                        if len(populated) == 1:
+                            items = populated
+                    if len(items) != 1:
+                        raise GraftError("Cross-account sharing requires exactly one unambiguous organization per profile; multiple populated organizations are never guessed.")
+                    selected_orgs.append(items)
+                orgs = selected_orgs
                 result.append([items[0] for items in orgs])
             else:
                 # Same account: map each organization's full/short ID without merging different organizations.
@@ -371,9 +388,17 @@ class Manager:
         if not isinstance(relative, str) or "\\" in relative:
             raise GraftError("Invalid recovery journal path.")
         parts = relative.split("/")
-        allowed = {"Claude"} | {p["folder"] for p in self.profiles()}
-        if (len(parts) != 5 or parts[0] not in allowed or parts[1] not in STORES
-                or not TOKEN.fullmatch(parts[2]) or not TOKEN.fullmatch(parts[3]) or not RECORD.fullmatch(parts[4])):
+        allowed = {self.profile_path(identity).relative_to(self.root).as_posix()
+                   for identity in ["main", *[p["id"] for p in self.profiles()]]}
+        from .transcripts import project_root, validate_relative
+        for identity in ["main", *[p["id"] for p in self.profiles()]]:
+            transcript_root = project_root(self, self.profile_path(identity))
+            prefix_parts = transcript_root.relative_to(self.root).parts
+            if tuple(parts[:len(prefix_parts)]) == prefix_parts and validate_relative(parts[len(prefix_parts):]):
+                return self._safe(self.root.joinpath(*parts))
+        prefix = "/".join(parts[:-4])
+        if (len(parts) < 5 or prefix not in allowed or parts[-4] not in STORES
+                or not TOKEN.fullmatch(parts[-3]) or not TOKEN.fullmatch(parts[-2]) or not RECORD.fullmatch(parts[-1])):
             raise GraftError("Invalid recovery journal path.")
         return self._safe(self.root.joinpath(*parts))
 
@@ -420,6 +445,12 @@ class Manager:
                             raise ValueError("record mismatch")
                     except (ValueError, UnicodeError) as exc:
                         raise GraftError("Recovery record does not match its destination. Nothing was written.") from exc
+            if data is not None and path.suffix == ".jsonl":
+                from .transcripts import validate_bytes
+                try:
+                    validate_bytes(data)
+                except (ValueError, UnicodeError) as exc:
+                    raise GraftError("Invalid transcript recovery payload; no files written.") from exc
             current = path.read_bytes() if path.exists() else None
             if _hash(current) not in (before, after):
                 raise GraftError(f"{path.name} changed during an unfinished merge. Kept it untouched; review pending.json and backups.")
@@ -435,6 +466,10 @@ class Manager:
             if data is None:
                 path.unlink()
             else:
+                if path.suffix == ".jsonl":
+                    self._safe(path.parent)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    self._safe(path)
                 _atomic(path, data)
         self._safe(self.state_file)
         _save(self.state_file, journal["state"])
@@ -470,8 +505,12 @@ class Manager:
         next_state = {"version": 1, "groups": {}}
         report = {"copied": 0, "deleted": 0, "conflicts": 0, "backups": 0, "warnings": [], "recovered": recovered}
         operations = []
+        transcript_sets = []
+        report["transcriptsCopied"] = 0
+        report["resumeHandlesRepaired"] = 0
         for group in self.groups():
             sets = self._group_folders(group)  # Preflight every group before any profile write.
+            transcript_sets.extend(sets)
             membership = sorted(group["members"])
             old = state["groups"].get(group["id"], {})
             if not isinstance(old, dict):
@@ -532,6 +571,8 @@ class Manager:
                         agreed[name] = wanted
                 scopes[scope] = agreed
             next_state["groups"][group["id"]] = {"members": membership, "scopes": scopes}
+        from .transcripts import plan
+        plan(self, transcript_sets, operations, report)
         if operations:
             journal = {"version": 1, "operations": operations, "state": next_state}
             history = self._safe(self.backup_dir / "transactions")
@@ -542,3 +583,4 @@ class Manager:
         else:
             _save(self.state_file, next_state)
         return report
+
