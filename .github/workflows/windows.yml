@@ -1,0 +1,68 @@
+name: Windows companion
+
+on:
+  push:
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+  pull_request:
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+  workflow_dispatch:
+    inputs:
+      portable_exe:
+        description: 'Build an unsigned portable Windows executable'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.13']
+    env:
+      PYTHONPATH: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests
+        run: python -m unittest discover -s windows/tests -v
+      - name: Compile source
+        run: python -m compileall -q windows/graft windows/launch.py windows/tests
+      - name: Native Windows process and Tk smoke tests
+        if: runner.os == 'Windows'
+        env:
+          GRAFT_TK_SMOKE: '1'
+        run: python -m unittest discover -s windows/tests -p test_interface.py -v
+
+  portable:
+    name: Build portable Windows executable
+    if: github.event_name != 'workflow_dispatch' || inputs.portable_exe
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build in an isolated environment
+        shell: pwsh
+        run: ./windows/build.ps1
+      - name: Upload unsigned executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeGraftWindows-unsigned
+          path: windows/dist/ClaudeGraftWindows.exe
+          if-no-files-found: error
+          retention-days: 14

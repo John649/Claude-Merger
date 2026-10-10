@@ -1,3 +1,7 @@
 Local Claude Graft 1.1.6 build with its self-updater disabled at user request. Updater.swift is inert, its menu is disabled, the Sparkle framework and update-feed metadata are absent. Source base: aaditya-v-more/claude-graft commit 0446afb. Claude Desktop’s separate updater is unchanged.
 
 Local additions (2026-09-29, version 1.1.6-local.2): chat groups (sidebar sections; every member, main Claude optional, shares one history; mirror passes repeat until chained accounts agree), Merge Chats Now (menu bar, shortcut and group panes; offers to quit, merge and reopen open Claudes), and Merge Chats Automatically (default on: merges every 2 minutes while all Claudes are closed, and brings chats left in another profile across on Open without asking). Build: `swiftc -O -swift-version 5 -target arm64-apple-macos13.0 Sources/Shared/*.swift Sources/App/*.swift -o ClaudeGraft`, copy into `~/Applications/Claude Graft.app/Contents/MacOS/`, `codesign --force --sign -` the app. Launcher code is unchanged.
+
+## Windows companion (experimental)
+
+The macOS Swift app is unchanged. A separate Python 3.11+/Tkinter Windows companion now provides isolated profiles, chat groups, conservative three-way local-record merging, and `.lnk` shortcuts. See [Windows setup, portable build, limitations, and recovery](windows/README.md). Current Claude sidebar display and cross-account resume are not guaranteed; follow the Windows acceptance checklist before using real history.
